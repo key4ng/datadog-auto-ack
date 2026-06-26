@@ -15,18 +15,37 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
 HOME = Path.home()
 RUNTIME_DIR = Path(os.environ.get("AUTO_ACK_RUNTIME_DIR", HOME / ".codex/datadog-auto-ack"))
-DB_PATH = os.environ.get("AUTO_ACK_DB_PATH", str(HOME / "Library/Messages/chat.db"))
+DB_PATH = os.environ.get(
+    "AUTO_ACK_DB_PATH",
+    os.environ.get("IMESSAGE_DB_PATH", str(HOME / "Library/Messages/chat.db")),
+)
 TARGET = os.environ.get("AUTO_ACK_TARGET", "43152")
-STATE_PATH = Path(os.environ.get("AUTO_ACK_STATE", RUNTIME_DIR / "state.json"))
-LOG_PATH = Path(os.environ.get("AUTO_ACK_LOG", RUNTIME_DIR / "auto_ack.log"))
-HEARTBEAT_PATH = Path(os.environ.get("AUTO_ACK_HEARTBEAT", RUNTIME_DIR / "heartbeat.txt"))
-POLL_SECONDS = int(os.environ.get("AUTO_ACK_POLL_SECONDS", "60"))
+STATE_PATH = Path(
+    os.environ.get(
+        "AUTO_ACK_STATE",
+        os.environ.get("IMESSAGE_43152_STATE", RUNTIME_DIR / "state.json"),
+    )
+)
+LOG_PATH = Path(
+    os.environ.get(
+        "AUTO_ACK_LOG",
+        os.environ.get("IMESSAGE_43152_LOG", RUNTIME_DIR / "auto_ack.log"),
+    )
+)
+HEARTBEAT_PATH = Path(
+    os.environ.get(
+        "AUTO_ACK_HEARTBEAT",
+        os.environ.get("IMESSAGE_43152_HEARTBEAT", RUNTIME_DIR / "heartbeat.txt"),
+    )
+)
+POLL_SECONDS = int(os.environ.get("AUTO_ACK_POLL_SECONDS", os.environ.get("IMESSAGE_43152_POLL_SECONDS", "60")))
+NOT_BEFORE_ISO = os.environ.get("AUTO_ACK_NOT_BEFORE_ISO")
 DRY_RUN = os.environ.get("AUTO_ACK_DRY_RUN", "").lower() in {"1", "true", "yes", "on"}
 
 ACK_REPLY_RE = re.compile(
@@ -101,6 +120,27 @@ def choose_reply(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def apple_time_to_datetime(value: int | float | None) -> datetime | None:
+    if value is None:
+        return None
+    seconds = float(value)
+    if seconds > 10_000_000_000:
+        seconds = seconds / 1_000_000_000
+    return datetime(2001, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=seconds)
+
+
+def not_before_datetime() -> datetime | None:
+    if not NOT_BEFORE_ISO:
+        return None
+    value = NOT_BEFORE_ISO
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 def message_text(row: sqlite3.Row) -> str:
     if row["text"]:
         return row["text"]
@@ -120,11 +160,15 @@ def message_text(row: sqlite3.Row) -> str:
 def poll_once() -> None:
     state = load_state()
     processed_ids = set(int(item) for item in state.get("processed_ids", []))
+    not_before = not_before_datetime()
     changed = False
 
     for row in reversed(fetch_candidate_messages()):
         message_id = int(row["message_id"])
         if message_id in processed_ids:
+            continue
+        message_date = apple_time_to_datetime(row["date"])
+        if not_before is not None and message_date is not None and message_date < not_before:
             continue
 
         reply = choose_reply(message_text(row))
