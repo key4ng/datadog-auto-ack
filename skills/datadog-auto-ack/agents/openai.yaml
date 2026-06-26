@@ -1,0 +1,4 @@
+interface:
+  display_name: "Datadog Auto Ack"
+  short_description: "Set up a local iMessage auto-ack monitor for Datadog SMS alerts."
+  default_prompt: "Use this skill to install or debug a local Datadog SMS auto-ack monitor."
