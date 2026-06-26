@@ -73,14 +73,18 @@ end tell
 
 def fetch_candidate_messages() -> list[sqlite3.Row]:
     query = """
-        SELECT message.ROWID AS message_id, message.text, message.date
+        SELECT
+          message.ROWID AS message_id,
+          message.text,
+          message.attributedBody AS attributed_body,
+          message.date
         FROM message
         LEFT JOIN handle ON message.handle_id = handle.ROWID
         LEFT JOIN chat_message_join ON message.ROWID = chat_message_join.message_id
         LEFT JOIN chat ON chat_message_join.chat_id = chat.ROWID
         WHERE message.is_from_me = 0
           AND (handle.id = ? OR chat.chat_identifier = ?)
-          AND message.text IS NOT NULL
+          AND (message.text IS NOT NULL OR message.attributedBody IS NOT NULL)
         ORDER BY message.date DESC
         LIMIT 25
     """
@@ -97,6 +101,22 @@ def choose_reply(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def message_text(row: sqlite3.Row) -> str:
+    if row["text"]:
+        return row["text"]
+
+    body = row["attributed_body"]
+    if body is None:
+        return ""
+    if isinstance(body, memoryview):
+        body = body.tobytes()
+
+    # macOS SMS rows sometimes store the visible string in an archived
+    # attributedBody while message.text is NULL. A forgiving UTF-8 decode keeps
+    # the embedded NSString content visible enough for the reply-option regex.
+    return body.decode("utf-8", errors="ignore")
+
+
 def poll_once() -> None:
     state = load_state()
     processed_ids = set(int(item) for item in state.get("processed_ids", []))
@@ -107,7 +127,7 @@ def poll_once() -> None:
         if message_id in processed_ids:
             continue
 
-        reply = choose_reply(row["text"] or "")
+        reply = choose_reply(message_text(row))
         if reply is None:
             continue
 
